@@ -2,6 +2,7 @@
 import createOpenAIAdapter from "./openai.js";
 import gemini from "./gemini.js";
 import codex from "./codex.js";
+import grokCli from "./grokCli.js";
 import sdwebui from "./sdwebui.js";
 import comfyui from "./comfyui.js";
 import huggingface from "./huggingface.js";
@@ -25,6 +26,7 @@ const ADAPTERS = {
   xai: createOpenAIAdapter("xai"),
   gemini,
   codex,
+  "grok-cli": grokCli,
   sdwebui,
   comfyui,
   huggingface,

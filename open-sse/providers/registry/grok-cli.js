@@ -77,10 +77,12 @@ export default {
     { id: "grok-4.5-high", name: "Grok 4.5 (High)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-medium", name: "Grok 4.5 (Medium)", upstreamModelId: "grok-4.5" },
     { id: "grok-4.5-low", name: "Grok 4.5 (Low)", upstreamModelId: "grok-4.5" },
+    { id: "grok-image", name: "Grok Image", kind: "image" },
   ],
   features: {
     usage: true,
   },
+  serviceKinds: ["llm", "image"],
   oauth: {
     // Same public client_id as Grok CLI / existing xai OAuth
     clientId: "b1a00492-073a-47ea-816f-4c329264a828",

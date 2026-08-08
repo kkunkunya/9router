@@ -97,7 +97,10 @@ const LIVE_MODEL_RESOLVERS = {
         });
       },
     });
-    return result?.models?.length ? { models: result.models } : null;
+    const grokModels = result?.models?.length
+      ? [...result.models, { id: "grok-image", name: "Grok Image", kind: "image" }]
+      : null;
+    return grokModels ? { models: grokModels } : null;
   },
   cursor: async (conn) => {
     const result = await resolveCursorModels({

@@ -1,24 +1,41 @@
 // 9Router menu bar app — thin control plane for the local 9router gateway.
 //
-// The app bundles a Node runtime + the 9router CLI in Contents/Resources and
-// spawns `node cli.js --no-tray --skip-update --host 127.0.0.1` on demand.
-// Menu bar shows live status (via /v1/models), start/stop, open dashboard.
+// Lifecycle contract:
+//   - App launch → service auto-starts (dashboard opens once ready).
+//   - App quit (any path: Quit button, Cmd+Q, system terminate) → the gateway
+//     is fully stopped: launcher wrappers + standalone server + port owner.
+//     This holds whether the gateway was started by the App or by the CLI
+//     (model-driven path) — the App is the primary human control plane.
+//   - CLI stays a supported control path for models/automation, but a gateway
+//     it started is still owned by the App for shutdown purposes.
 //
 // Build: scripts/macos/build-app.sh (no Xcode project needed).
 
 import AppKit
 import SwiftUI
+import Darwin
 
 let kPort = 20128
 let kHost = "127.0.0.1"
 let kDashboardURL = "http://127.0.0.1:\(kPort)/dashboard"
+
+/// Precise pkill patterns covering every 9router gateway process shape:
+/// App-spawned launcher wrapper, standalone Next server, global CLI tray
+/// wrapper (model-driven). Deliberately NOT matching: the sync daemon
+/// (`9router config receive`) and the menu bar App itself (`.../MacOS/9Router`).
+let kServicePkillPatterns = [
+    "9router/cli.js --no-tray",      // App-spawned launcher wrapper
+    "/9router/app/custom-server.js", // standalone Next server
+    "/9router/app/server.js",        // standalone server (older layout)
+    "9router --tray",                // global CLI tray wrapper (model-driven)
+]
 
 struct Status {
     var running: Bool = false
     var health: String = "checking…"
 }
 
-final class RouterController: ObservableObject {
+final class RouterController: NSObject, ObservableObject {
     @Published var status = Status()
     private var child: Process?
     private var timer: Timer?
@@ -33,7 +50,13 @@ final class RouterController: ObservableObject {
         resourcesDir.appendingPathComponent("9router/cli.js")
     }
 
-    init() {
+    override init() {
+        super.init()
+        // The gateway must die with the App, whatever the exit path
+        // (Quit button, Cmd+Q, logout/shutdown).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appWillTerminate),
+            name: NSApplication.willTerminateNotification, object: nil)
         // Poll health every 5s so the menu reflects reality.
         timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.refreshHealth()
@@ -48,7 +71,61 @@ final class RouterController: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
     }
+
+    @objc private func appWillTerminate() {
+        stop()
+    }
+
+    // MARK: - Synchronous process helpers
+
+    /// Runs a command synchronously and returns trimmed stdout (or nil on failure).
+    @discardableResult
+    private func runSync(_ executable: String, _ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let out = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out?.isEmpty == true ? nil : out
+    }
+
+    private func pkill(_ pattern: String) {
+        runSync("/usr/bin/pkill", ["-f", pattern])
+    }
+
+    /// PID of whatever currently listens on the gateway port (nil = free).
+    private func portOwnerPid() -> Int? {
+        guard let out = runSync("/usr/sbin/lsof", ["-ti:\(kPort)"]) else { return nil }
+        return out.split(separator: "\n").first.flatMap { Int($0) }
+    }
+
+    /// Stops every 9router gateway process, then force-frees the port.
+    /// Idempotent — safe to call from both Stop and quit paths.
+    private func killAllServiceProcesses() {
+        for pattern in kServicePkillPatterns {
+            pkill(pattern)
+        }
+        // Give launcher wrappers time to run their graceful cleanup
+        // (they SIGKILL their detached server themselves).
+        Thread.sleep(forTimeInterval: 0.8)
+        if let pid = portOwnerPid() {
+            kill(pid_t(pid), SIGKILL)
+        }
+    }
+
+    // MARK: - Health
 
     func refreshHealth() {
         let url = URL(string: "http://\(kHost):\(kPort)/v1/models")!
@@ -69,6 +146,8 @@ final class RouterController: ObservableObject {
             }
         }.resume()
     }
+
+    // MARK: - Control
 
     /// Ensure the gateway is running, then open the dashboard.
     func launchAndOpenDashboard() {
@@ -91,7 +170,21 @@ final class RouterController: ObservableObject {
     }
 
     func start() {
-        guard child == nil else { return }
+        // Real state wins over bookkeeping: if something already answers on the
+        // port (our child or an externally started gateway), that IS running.
+        if portOwnerPid() != nil {
+            refreshHealth()
+            return
+        }
+        // Clear a stale child reference: dead wrapper → forget it;
+        // wrapper alive but no server → terminate and rebuild.
+        if let c = child {
+            if c.isRunning { c.terminate() }
+            child = nil
+        }
+        // Free the port and any leftover gateway processes before claiming it.
+        killAllServiceProcesses()
+
         guard FileManager.default.fileExists(atPath: nodeBin.path),
               FileManager.default.fileExists(atPath: cliJs.path) else {
             status = Status(running: false, health: "bundled runtime missing")
@@ -123,16 +216,12 @@ final class RouterController: ObservableObject {
 
     func stop() {
         // Kill whatever listens on the port first (covers stale server children),
-        // then terminate the CLI parent.
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        task.arguments = ["-f", "9router/cli.js --no-tray"]
-        try? task.run()
-        task.waitUntilExit()
-
-        if let child {
-            child.terminate()
-            self.child = nil
+        // then terminate the CLI parent. Idempotent: also shuts down a gateway
+        // that was started by the CLI (model-driven path).
+        killAllServiceProcesses()
+        if let c = child {
+            if c.isRunning { c.terminate() }
+            child = nil
         }
         status = Status(running: false, health: "stopped")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in

@@ -8,6 +8,7 @@ import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
+import { toMarkdownImage } from "../concerns/image.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
 /**
@@ -497,6 +498,16 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
   if (eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
     state.toolCallIndex++;
     return null;
+  }
+
+  // Embedded image result (Grok Build / Codex image_generation_call) → markdown image
+  if (eventType === "response.output_item.done" && data.item?.type === "image_generation_call") {
+    const img = toMarkdownImage(data.item?.result);
+    if (!img) return null;
+    return buildChunk(
+      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+      { content: img }
+    );
   }
 
   // Response completed

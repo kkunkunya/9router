@@ -3,6 +3,19 @@ export function encodeDataUri(mimeType, base64) {
   return `data:${mimeType};base64,${base64}`;
 }
 
+// Render a raw image payload (bare base64 / data URI / http(s) URL) as a
+// markdown image reference. Used to surface chat-embedded image results
+// (Responses API `image_generation_call`) to chat-completions clients.
+export function toMarkdownImage(result) {
+  if (typeof result !== "string" || !result) return null;
+  if (/^data:image\//i.test(result) || /^https?:\/\//i.test(result)) {
+    return `![image](${result})`;
+  }
+  // Bare base64 payload: sniff the two most common magic bytes; default jpeg.
+  const mime = /^\/9j/.test(result) ? "image/jpeg" : /^iVBOR/.test(result) ? "image/png" : "image/jpeg";
+  return `![image](${encodeDataUri(mime, result)})`;
+}
+
 // Parse a base64 data URI → { mimeType, base64 }, or null if not a data URI.
 // [\s\S] tolerates newlines inside the base64 payload.
 const DATA_URI_RE = /^data:([^;]+);base64,([\s\S]+)$/;

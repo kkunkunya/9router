@@ -1,4 +1,5 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
+import { toMarkdownImage } from "../../translator/concerns/image.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
@@ -212,7 +213,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       const inTokensForLog = (usage.input_tokens || 0)
         + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
         + (usage.cache_creation_input_tokens || 0);
-      const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
+      let { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
+      const imageContent = (jsonResponse.output || [])
+        .filter((item) => item?.type === "image_generation_call" && item?.status === "completed" && item?.result)
+        .map((item) => toMarkdownImage(item.result))
+        .filter(Boolean)
+        .join("\n\n");
+      if (imageContent) textContent = textContent ? `${textContent}\n\n${imageContent}` : imageContent;
       const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(buildRequestDetail({

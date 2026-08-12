@@ -116,12 +116,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const detectedTool = detectClientTool(clientRawRequest?.headers || {}, body);
   if (detectedTool === "deepseek-tui" && body.stream !== true) stream = false;
 
-  // Check client Accept header preference for non-streaming requests
-  // This fixes AI SDK compatibility where clients send Accept: application/json
+  // OpenAI 规范里 stream 默认 false。AI SDK 等客户端非流式请求既不发 stream 字段
+  // 也不发 Accept 头，原逻辑 `body.stream !== false` 会把它们误判成流式，导致
+  // 返回 SSE（含 data: [DONE]）而客户端按 JSON 解析失败（Invalid JSON response）。
+  // 修复：只有显式 stream:true 或 Accept 明确要求 text/event-stream 才走流式。
   const acceptHeader = clientRawRequest?.headers?.accept || "";
-  const clientPrefersJson = acceptHeader.includes("application/json");
   const clientPrefersSSE = acceptHeader.includes("text/event-stream");
-  if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
+  const clientWantsStream = body.stream === true || clientPrefersSSE;
+  if (!clientWantsStream && !providerRequiresStreaming) {
     stream = false;
   }
 

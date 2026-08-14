@@ -71,6 +71,8 @@ export class DefaultExecutor extends BaseExecutor {
     const transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
+      // Codex clients call the fast lane "fast"; compatible upstreams expect "priority".
+      if (transformed.service_tier === "fast") transformed.service_tier = "priority";
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
       if (this.config.quirks?.dropClientMetadata) {
         delete transformed.client_metadata;
